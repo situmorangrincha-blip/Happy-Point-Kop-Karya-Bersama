@@ -1,55 +1,150 @@
-# Happy Point KKB: panduan pasang (sekali saja)
+# Update Sales Monitor tanpa bikin Vercel dari awal
 
-Web ini punya dua alamat:
-- `/` = form pelanggan (ini yang di-QR)
-- `/admin` = halaman admin (login)
+Kuncinya: **jangan bikin project Vercel baru tiap update.** Data (upload, pengaturan kontrak, SO-DO) disimpan di Vercel Blob yang menempel di project. Selama pakai project yang sama, data aman dan tinggal deploy ulang kodenya.
 
-## 1. Database dan penyimpanan foto (Supabase)
-1. Buka supabase.com, buat project baru (atau pakai project yang sudah ada).
-2. Menu **SQL Editor** > New query > paste seluruh isi file `supabase.sql` > **Run**. Ini membuat semua tabel dan bucket foto privat "faktur".
-3. Menu **Project Settings > API**, catat dua hal:
-   - **Project URL** (contoh `https://abcd.supabase.co`)
-   - **service_role key** (rahasia, jangan dibagikan atau ditaruh di kode)
+## Setup sekali saja
+1. Bikin repo GitHub (private), upload **isi** folder zip ini (bukan folder pembungkusnya).
+2. Vercel > Add New > Project > Import repo itu. Framework: Vite (build `npm run build`, output `dist`). Deploy.
+3. Project > Storage > Create > **Blob**, lalu Connect ke project. Redeploy sekali supaya token terbaca.
 
-## 2. Email notifikasi (Gmail)
-1. Akun Google yang dipakai sebagai pengirim harus aktif **Verifikasi 2 Langkah**.
-2. Buka myaccount.google.com/apppasswords, buat App Password (nama bebas, misal "Happy Point"), catat 16 karakternya.
-3. Penerima notifikasi tidak ditulis di sini. Diatur nanti di halaman admin > Pengaturan.
+## Tiap ada versi baru (pilih satu)
+**A. Lewat web GitHub (paling gampang)**
+Repo > Add file > Upload files > drag semua isi zip baru (menimpa file lama) > Commit. Vercel otomatis deploy sekitar 1 menit. Batas GitHub 100 file per upload; zip ini sekitar 60 file.
 
-## 3. GitHub dan Vercel
-1. Buat repo baru di GitHub, upload semua isi folder ini (file `package.json` harus ada di root repo, bukan di dalam subfolder).
-2. Vercel > Add New Project > pilih repo itu. Framework otomatis terdeteksi Vite.
-3. Sebelum Deploy, isi **Environment Variables**:
+**B. Lewat git**
+Unzip ke folder repo (timpa), lalu: `git add -A && git commit -m "update" && git push`
 
-| Nama | Isi |
-|---|---|
-| `SUPABASE_URL` | Project URL dari langkah 1 |
-| `SUPABASE_SERVICE_KEY` | service_role key dari langkah 1 |
-| `SESSION_SECRET` | teks acak panjang apa saja (minimal 32 karakter) |
-| `ADMIN_USER` | username pemilik, contoh `rincha` |
-| `ADMIN_PASS` | password pemilik (minimal 6 karakter) |
-| `ADMIN_NAME` | nama tampilan pemilik, contoh `Rincha` |
-| `SMTP_USER` | alamat Gmail pengirim |
-| `SMTP_PASS` | App Password 16 karakter dari langkah 2 |
-| `APP_URL` | alamat web ini, contoh `https://happy-point-kkb.vercel.app` (isi setelah tahu alamatnya, lalu Redeploy) |
+**C. Lewat Vercel CLI (tanpa GitHub)**
+`npm i -g vercel` > `vercel link` (sekali) > tiap update: `vercel --prod` dari folder project.
 
-4. Klik Deploy.
+## Kalau terlanjur bikin project baru
+Datanya masih ada di Blob lama. Di project baru: Storage > **Connect existing store** > pilih store lama > Redeploy. Data muncul lagi.
 
-## 4. Pertama kali dipakai
-1. Buka `alamat-web/admin`, login dengan `ADMIN_USER` dan `ADMIN_PASS`. Login pertama otomatis membuat akun pemilik.
-2. Menu **Pengaturan**: tambah email penerima notifikasi, tambah akun admin lain (tiap orang punya username dan password sendiri), ganti password kalau perlu.
-3. Buat QR code dari alamat utama web (`alamat-web/`), cetak, tempel di KKB.
-4. Tes: kirim satu faktur dari HP, cek email masuk, cek di antrean admin.
+## Isi versi ini (9 Nov 2026)
+**Section baru:** Market Productivity (EC, AC, GreenStore, MSS, PICOS) dan Ranking SKU. Keduanya diisi lewat tombol Upload: slot **Market Productivity**, **Omset per SKU**, dan **Qty per SKU**.
+**File Omset / Qty per SKU** boleh export tiga blok (bulan berjalan, L3M dengan kolom RATA2 PER BULAN, bulan lalu). Blok bulan berjalan masuk ke halaman monitoring seperti biasa, dan semua blok dipakai Ranking SKU. Format baris per toko x SKU yang lama tetap terbaca.
+**ITG:** halaman ITG memakai versi baru (target dari Excel, kolom Reward, filter hari/salesman, kontrak). Slot ITG harus di-upload ulang dengan Excel ITG format baru (Target per bulan, Actual, Reward). Hasil edit di halaman ITG tersimpan di browser (localStorage), belum dibagikan antar perangkat.
+**DAP:** target per toko dari worksheet target DAP (dikenali dari isinya), filter pekan 1&3 / 2&4, PLAN = gap / sisa kunjungan dengan minimum order (wholesaler 1 juta, retail 200 ribu), edit angka langsung, pencarian SKU / kategori / principal.
+**Rapot:** indikator baru EC, AC, ITG, dan MSS (bobot bisa diubah; indikator tanpa data dilewati).
+**Data lama:** slot ITG lama (format sebelumnya) tidak terbaca di halaman ITG baru dan perlu upload ulang. Slot lain tidak perlu diulang.
 
-## Cara kerja poin
-- Admin memeriksa foto faktur, mengisi **total belanja produk Garudafood dan Dilan** dan mencentang **ada Kacang Atom/Kulit 1000 min 1 Ball**.
-- Rp100.000 = 1 poin. Sisa di bawah Rp100.000 kebawa ke faktur berikutnya pelanggan yang sama (dikenali dari nomor HP). Poin tidak hangus.
-- Faktur tanpa kacang = 0 poin, belanjanya tidak dihitung dan tidak kebawa.
-- Penukaran hadiah dicatat dan mengurangi saldo (Pelanggan & saldo > Tukar).
-- **Export Excel** (Pelanggan & saldo) berisi 3 sheet: Faktur, Rekap Poin, Penukaran.
+## Update berikutnya (9 Nov 2026, sore)
+- **ITG:** tombol **Unduh PDF** (semua kontrak sesuai filter, atau satu toko dari panel kontrak). Excel ITG boleh punya dua kolom reward ("Reward Total 2 Bulan" dan "Reward Sebulan"); pilih yang ditampilkan lewat tombol **Reward** di pengaturan ITG.
+- **DAP:** halaman **Editor DAP** layar penuh (menu Editor DAP atau tombol Buka Editor DAP), preview PDF ikut berubah otomatis saat angka diedit, dan satuan Rp / Juta.
+- **Tampilan:** font Quicksand di seluruh web, tombol ukuran huruf (A- / A+) dan satuan (Rp / Juta) di header.
+- **GreenStore / MSS lama dihapus** dari DAP, Rapot, dan daftar upload karena sudah masuk section Market Productivity. Indikator MSS di Rapot sekarang bobot 10.
 
-## Catatan
-- Foto faktur disimpan privat, hanya tampil di halaman admin lewat link sementara (15 menit).
-- Foto diperkecil otomatis di HP pelanggan sebelum dikirim.
-- Kalau email gagal terkirim, faktur tetap tersimpan dan tampil di antrean admin.
-- Logo Garudafood belum dipasang. Taruh file logonya di folder `public/` lalu minta dipasang.
+## Editor DAP di halaman sendiri (9 Nov 2026, malam)
+- Di halaman DAP klik **Edit DAP di halaman sendiri**: terbuka alamat tersendiri (`#/dap?depot=...&team=...&date=...`) yang bisa dibuka di tab baru atau dibagikan. Di sana tabelnya selebar layar dan **tampilan kertasnya sama dengan hasil cetak** (tombol Cetak / Simpan PDF memakai tampilan yang sama, pilih "Simpan sebagai PDF" di jendela cetak, kertas A4 landscape).
+- **Banyak tabel dalam satu halaman:** Tabel DAP (Rp), Tabel DAP (Qty), Top toko (Rp / Qty), dan Program ON faktur. Tiap tabel punya pengaturan sendiri (judul, item, kolom, Top N, urutan) dan bisa digandakan, diurutkan, atau dihapus.
+- **Per SKU, kategori, atau principal:** pilih item lewat pencarian, lalu tiap item mendapat kolom Target, Actual, Gap, % Ach, dan L3M per bulan / per kunjungan. Target kategori dan principal dari slot Target kategori / principal (Template 10); target per SKU dari kolom Target per SKU di Omset per SKU; Target Qty diisi manual.
+- **Sembunyikan baris** (x di ujung baris, per tanggal; total ikut berubah), **edit angka langsung**, dan **Preset** (simpan susunan, jadikan bawaan; langsung dipakai saat halaman dibuka).
+- Perbaikan: principal dan brand sekarang ikut terbaca dari file Qty per SKU tiga blok (sebelumnya hampir semua principal kosong di halaman monitoring).
+
+## Update 3 (9 Nov 2026, malam)
+- **Papan ringkas** di Jelajah (dan di halaman Grafik, grafik lama dilipat): 8 grafik kecil rapat dalam satu layar (salesman, principal, ukuran toko, channel, hari kunjungan, tren, kategori teratas, toko teratas) plus kartu skor.
+- **Font:** 23 pilihan jenis huruf di header (dimuat hanya saat dipilih). **Ukuran huruf** sekarang bisa sampai 60% (A-) dan 140% (A+). Paket font baru ada di package.json, jadi Vercel akan menginstalnya otomatis.
+- **Editor DAP:** Fokus satu salesman (semua tabel salesman itu berurutan: DAP, Top toko, ON faktur), urutan cetak per tabel atau per salesman, kertas Landscape / Portrait, skala cetak 50-100%, dan susunan item "Bertumpuk di bawah" (maks N item per tabel) supaya kolom tidak melebar saat dicetak.
+- **PDF kontrak ITG:** pilihan kertas Portrait / Landscape.
+
+## Update 4 (9 Nov 2026, malam)
+- **Jelajah, kategori:** bulan lalu dan L3M per toko per SKU sekarang diisi dari blok file Omset / Qty per SKU (tiga blok), jadi kotak Tren (bulan lalu, L3M, vs bulan lalu, vs L3M) aktif saat rows berisi SKU, kategori, brand, atau principal. Kategori = Sub Brand dari file (cocok dengan kategori fokus di Excel monitoring); kategori dari Database SKU tersedia sebagai dimensi terpisah "Kategori SKU".
+- **Jelajah, Kategori fokus:** pilih kategori fokus lewat pencarian di panel Cek Cepat, lalu pakai sebagai **Kolom** (ACT, % Ach, L3M per kategori), **Filter**, atau **Baris**.
+- **Market Productivity, GreenStore dan MSS per toko:** filter **Hari JKS** dan **Pekan JKS** (1&3, 2&4, mingguan), plus kolom Hari JKS / Pekan JKS.
+- Pemilih (SKU / kategori / principal) tidak lagi membuat tombol di bawahnya melompat saat diklik.
+
+## Update 5 (9 Nov 2026, malam): tim Bima dan ITG Supercup
+- **Data utama tim Bima terbaca tanpa sheet "BIMA".** Satu pembaca format baru (TGT, OLAP SALES 1, OLAP FOCUS CATEGORY, LAB, JKS SALESMAN, DAP TGT PER TOKO) sekarang dipakai untuk tim mana pun; tim Bima = salesman dengan Tipe Sales Bima / Yudistira di JKS. Sheet "BIMA" format lama tetap terbaca sebagai cadangan. Kalau sheet TGT tidak memuat salesman tim itu, target diambil dari kolom TGT di sheet LAB (muncul sebagai peringatan). Pesan error kini menyebut alasan per tim, bukan hanya tim Arjuna.
+- **ITG Supercup** (menu ITG > ITG Supercup): slot upload baru **Target ITG Supercup** (Excel target Supercup, kolom dikenali dari judul). Outlet dicocokkan ke JKS tim lewat **ID toko** (bukan nama depo), jadi satu file region boleh di-upload di setiap depo.
+  - Target per bulan dalam ctn; Actual = qty (ctn) semua SKU principal GBS dari file Qty per SKU.
+  - Reward bulanan 0,75% x target bulan jika >= 100%; quartal 0,5% x target quartal (jumlah tiga bulan) jika >= 100%; big cup 1% x omset SKU big cup (berdiri sendiri). Persentase, principal, dan daftar kode SKU big cup bisa diubah di "Pengaturan program".
+  - Rupiah = ctn x harga per ctn (omset / qty bulan itu per outlet; outlet tanpa pembelian memakai rata-rata seluruh outlet tim).
+  - Angka bulanan disimpan tiap upload (slot riwayat) supaya quartal bisa dijumlah walau file hanya memuat bulan berjalan dan bulan lalu.
+  - Bulan yang tidak ada di file target (mis. Oktober) dianggap sama dengan bulan pertama (bertanda ~, bisa diedit atau dikosongkan).
+  - Bisa edit target, actual, dan reward per outlet; filter salesman, hari JKS, status; cetak A4 portrait / landscape.
+
+## Update 6 (9 Nov 2026, malam): tabel program di kontrak ITG dari katalog
+- **Tabel program di kontrak ITG terisi dari Excel program** (section Program, tanpa upload ulang). Di pengaturan di atas kertas ada **Tabel program dari katalog**: tiap tabel punya judul, jenis (ON faktur / OFF faktur / Semua), tingkat (semua tingkat strata atau tertinggi saja), wilayah strata, dan tombol **Pilih program** berisi daftar yang bisa dicari (kode, nama, brand) dengan filter ON / OFF / Lainnya, jumlah toko ITG yang cocok, "Pilih hasil pencarian", dan "Kosongkan".
+- **Bisa lebih dari satu tabel** (mis. satu ON faktur dan satu OFF faktur): tombol + Tambah tabel / + OFF faktur, urutan bisa digeser, tiap tabel bisa disembunyikan.
+- **Yang dipilih adalah daftar program untuk semua toko; di kertas hanya muncul program yang cocok dengan toko itu** (channel, ukuran, penanda ITG, dan daftar peserta, sama seperti section Program). Skema strata diskon dari sheet STRATA ikut bisa dipilih, satu baris per tingkat.
+- **Di kertas** tiap baris bisa diedit, disembunyikan (x), dan ditambah manual (+ tambah baris). Kolom Pengambilan tetap kosong untuk diisi; Potongan dan Pengambilan berupa angka ikut ke Total potongan dan Kesimpulan. Semuanya ikut ke PDF.
+- Isian manual lama di tabel ON faktur (versi sebelumnya) tidak dipindahkan; isi ulang lewat + tambah baris kalau perlu.
+
+## Update 7 (9 Nov 2026, malam): benefit toko dan total benefit kembali
+- **Kolom "Benefit toko" di tabel program terisi otomatis** dari Excel program: nilai "Potongan Rp ..." per baris (atau Nilai Reward angka bila Tipe Reward = potongan Rp). Program persen atau harga khusus tanpa nilai Rp dibiarkan kosong untuk diisi manual (angka bisa diedit, oranye = diubah).
+- **Setiap tabel program punya baris Total Benefit** (Total Benefit ON Faktur / Total Benefit OFF Faktur).
+- **Rincian total di bawah Kesimpulan:** Total Benefit OFF Faktur (reward ITG + tabel OFF), Total Benefit ON Faktur, dan **Estimasi total benefit program = OFF + ON**. Semuanya ikut ke PDF.
+- Opsi per tabel **"Hanya yang ada benefit Rp"** menyembunyikan program persen atau tanpa nilai Rp, supaya tabel ON faktur berisi program yang benefit-nya bisa dijumlahkan seperti di kontrak lama.
+
+## Update 8 (9 Nov 2026, malam): pengaturan kontrak ITG berlaku untuk semua toko
+- **Pengaturan kontrak otomatis berlaku untuk semua toko.** Tabel yang tampil, kolom tiap tabel, sumber histori (per bulan / per kunjungan, rata-rata 3 bulan / bulan lalu / bulan data), dasar target kontrak, persen basis, minimal %, dan item unggulan wajib: ubah di satu toko, toko lain langsung ikut. Yang tetap per toko: angka yang diketik di kertas, baris program yang disembunyikan atau ditambah, dan jumlah kunjungan.
+- **Bar di atas kartu pengaturan** menunjukkan "Pengaturan umum" atau "Khusus toko ini". Tombol **Khusus toko ini** membuat toko boleh berbeda; **Kembali ke pengaturan umum** menghapus pengaturan khusus itu; **Jadikan semua toko seperti ini** menjadikan pengaturan toko yang sedang dibuka sebagai pengaturan umum dan menghapus pengaturan khusus di semua toko. Toko yang dulu sudah diubah satu per satu otomatis terbaca sebagai "Khusus toko ini".
+- Tombol lama "Jadikan bawaan semua toko" dan "Terapkan ke N toko (filter)" diganti oleh logika di atas.
+- **Penyimpanan di browser kini per depo x tim.** Pengaturan dan edit lama (yang belum dibedakan) dipindahkan otomatis ke depo dan tim pertama yang dibuka setelah update; data lama tidak dihapus dari browser.
+- Item unggulan wajib ikut ke PDF sebagai pengaturan umum.
+
+## Update 9 (9 Nov 2026, malam): tabel ON faktur jadi template untuk semua toko
+- **Perubahan di tabel program (ON/OFF faktur) berlaku untuk semua toko** selama toko dalam mode "Pengaturan umum": baris yang disembunyikan (x), baris tambahan (+ tambah baris), dan teks yang diubah (nama program, min order, satuan, diskon).
+- **Tetap per toko:** angka **Benefit toko** yang diketik, kolom **Pengambilan**, serta semua angka hitungan (target, actual, reward, histori, rekomendasi).
+- **Khusus toko ini** membuat perubahan baris hanya untuk toko itu; **Kembali ke pengaturan umum** menghapus perubahan khusus itu (benefit dan pengambilan tetap); **Jadikan semua toko seperti ini** juga membawa isi tabel program toko itu ke semua toko. Data lama yang sudah lu ubah di satu toko ikut terbaca dan terbawa.
+- Baris dikenali dari isinya (kode program, min order, satuan, diskon), bukan urutan, jadi "sembunyikan baris ini" tepat sasaran di toko mana pun. Template tersimpan di browser per depo x tim bersama pengaturan lain.
+
+## Update 10 (10 Nov 2026): kontrak ITG Supercup per outlet
+- **Halaman ITG Supercup punya dua tab: Tabel dan Kontrak.** Tab Kontrak membuat kontrak per outlet dengan tampilan edit dan template yang sama seperti kontrak ITG Arjuna: kartu pengaturan di atas kertas, bar **Pengaturan umum / Khusus toko ini**, tombol **Jadikan semua toko seperti ini**, kertas yang bisa diklik dan diedit, serta PDF per outlet atau gabungan.
+- **Bagian Supercup di kertas** (menggantikan tabel OFF): target dan actual per bulan (ctn), persen, gap, benefit (0,75% / 0,5% / 1%), dan **reward potensi** untuk tiap bulan, quartal, dan big cup, plus Total Benefit ITG Supercup. Target dan actual yang diedit di kertas ikut berubah di tab Tabel dan sebaliknya.
+- **Tabel program ON/OFF faktur dari katalog**, sama dengan Arjuna: pilih program dengan pencarian, beberapa tabel, template baris untuk semua outlet (sembunyikan, tambah baris, ubah teks, benefit toko), Total Benefit ON/OFF Faktur dan **Estimasi total benefit program** = Supercup + program.
+- **Pilihan tim sumber katalog**: centang katalog program dari tim mana yang dipakai (tim ini dan/atau tim lain di depo yang sama; katalog tim lain terbaca kalau sudah di-upload di tim itu). Outlet yang ada di Excel Supercup dianggap peserta ITG.
+- Pengaturan dan template kontrak Supercup tersimpan di browser per depo x tim, terpisah dari ITG Arjuna.
+- Komponen tabel program (tampilan dan pengaturan) kini dipakai bersama oleh kontrak Arjuna dan Supercup.
+
+## Update 11 (11 Nov 2026): section "Discuss with GERY" (Studio 3D)
+- **Section baru di layar pilih section: "Discuss with GERY"** (kartu 07, bertanda "baru"). Pilih depo, pilih tim, lalu GERY (robot pemandu 3D) membahas data tim itu dengan data asli.
+- **Tiga topik:** ITG Supercup, ITG (Arjuna), dan Rapot. Topik yang datanya belum ada dinonaktifkan dengan keterangan (misalnya "Belum ada file Target ITG Supercup").
+- **Cara kerja:** GERY di tengah, enam panel data mengelilinginya. Tombol ›/‹ atau panah keyboard memindahkan fokus: GERY melompat, menoleh, menunjuk panel dengan garis cahaya, dan bubble menjelaskan angkanya plus saran. **Semua angka dan kalimat dihitung dari data lewat rumus, bukan ditulis AI.** Penjelasan AI belum diaktifkan.
+- **Interaktif:** seret GERY untuk memutar, klik GERY untuk menyapa, kepala mengikuti kursor, panel miring mengikuti kursor, ▶ Auto untuk presentasi otomatis, ⛶ layar penuh, "Anonimkan nama" untuk presentasi, tema Terang/Gelap.
+- **Tiga mode tampilan** (pilihan diingat per perangkat): Presentasi 3D (laptop), Standar (tanpa 3D, paling ringan), dan Ringan (HP/tab). Kalau WebGL tidak tersedia, otomatis memakai Standar; kalau perangkat lambat, kualitas diturunkan otomatis (label "hemat").
+- **"Buka detail"** di tiap panel membuka halaman aslinya (ITG, ITG Supercup, atau Rapot).
+- **Dependensi baru: `three` 0.128.0** (package.json dan package-lock.json ikut berubah; Vercel memasangnya otomatis). Kode 3D dimuat hanya saat section ini dibuka, jadi halaman lain tidak bertambah berat.
+- Angka Supercup dan ITG memakai pengaturan yang sama dengan halaman aslinya (pengaturan program Supercup, pengaturan ITG, dan edit angka di browser lu).
+
+## Update 12 (13 Nov 2026): Upload cerdas (banyak file sekaligus)
+- **Jendela Upload sekarang punya dua tab: "Upload cerdas (banyak file)" (tab pertama) dan "Per slot"** (cara lama, tidak berubah).
+- **Upload cerdas:** tarik atau pilih beberapa Excel sekaligus. Web membaca **isi** tiap file (nama sheet dan judul kolom), bukan nama file, lalu menebak jenis datanya: Data utama, Qty per SKU, Omset per SKU (termasuk export tiga blok), Market Productivity, Target ITG, Target ITG Supercup, Target kategori/principal, Database SKU, dan Program (Excel standar).
+- **Tabel pratinjau sebelum menyimpan:** nama file, jenis data terdeteksi (bisa diganti lewat dropdown), tingkat keyakinan (tinggi / sedang / rendah), ringkasan isi (jumlah toko, salesman, baris, periode), peringatan, dan keterangan kalau data yang ada akan ditimpa. File yang tidak dikenali ditandai "gagal" dengan penjelasan.
+- **Pengaman:** tidak ada yang tersimpan sebelum menekan Simpan; dua file untuk jenis data yang sama ditandai dan tombol Simpan menunggu salah satunya dilepas centangnya; peringatan kalau periode di dalam file berbeda dengan periode data; ada tombol **Batalkan upload ini** yang mengembalikan data yang tertimpa (berlaku selama jendela upload belum ditutup dan halaman belum dimuat ulang).
+- Semua file masuk ke depo dan tim yang sedang dibuka. Daftar peserta program dan aturan salesman tetap lewat tab "Per slot". File SO dan STK tetap diupload di section Monitoring SO-DO.
+
+## Update 12 (13 Nov 2026): Upload cerdas (banyak Excel sekaligus)
+- **Upload > tab "Upload cerdas (banyak file)"** (tab bawaan; tab "Per slot" yang lama tetap ada). Tarik beberapa Excel sekaligus: web membaca **isi** tiap file (nama sheet dan judul kolom, bukan nama file), menebak itu data apa, dan menampilkan tabel pratinjau: file, jenis data terdeteksi (bisa diganti lewat dropdown), tingkat keyakinan, ringkasan isi, dan peringatan.
+- **Dikenali:** Data utama (format baru dan lama), Qty per SKU, Omset per SKU (termasuk export tiga blok), Target ITG, Target ITG Supercup, Market Productivity, Target kategori / principal, Database SKU, dan Program (Excel standar). File yang tidak dikenali (misalnya SO / STK) ditandai gagal dengan petunjuk, dan jenisnya bisa dipilih manual.
+- **Aman:** tidak ada yang tersimpan sebelum menekan **Simpan**. Dua file untuk jenis data yang sama ditandai konflik dan harus dipilih salah satu. Peringatan muncul kalau periode di file berbeda dengan periode data. Data yang akan ditimpa ditandai "(menimpa)".
+- **Tombol "Batalkan upload ini"** mengembalikan data yang baru saja ditimpa (berlaku selama jendela upload belum ditutup dan halaman belum dimuat ulang).
+- Semua file masuk ke depo dan tim yang sedang dibuka. Daftar peserta program dan aturan salesman tetap lewat tab "Per slot".
+
+## Update 13 (13 Nov 2026): SAK, salesman pengganti, dan nama di luar JKS
+- **Halaman Upload > Per slot > Aturan salesman** kini punya dua bagian baru (tersimpan di slot yang sama dengan aturan pindah toko, per depo dan tim, dipakai bersama, dan otomatis berlaku di setiap upload berikutnya):
+  - **Nama SAK**: diisi bawaan Arjuna Kebayoran = Rincha, Bima Kebayoran = Dezzy, Arjuna Kapuk = Hanson, Bima Kapuk = Mohammad Zia; bisa diubah atau dikosongkan. Pencocokan lewat potongan nama, tanpa peduli huruf besar atau kecil.
+  - **Salesman pengganti**: nama lama di pivot atau TGT dikreditkan ke pengganti (omset dan target). Nama lama yang belum diatur muncul sebagai tombol di bawah daftar, tinggal klik lalu pilih pengganti dari salesman JKS.
+- **SAK**: omset atas nama SAK yang ada di pivot atau TGT tampil sebagai baris sendiri ("nama (SAK)", tanpa ranking) dan ikut grand total tim. Target SAK dari sheet TGT kalau ada barisnya; kalau tidak ada, targetnya sudah termasuk di total tim. SAK yang punya toko JKS dihitung seperti salesman lain.
+- **Nama lain di pivot yang tidak ada di JKS dan belum diatur** tidak lagi dibuang diam-diam: omsetnya masuk baris **"Lainnya (di luar JKS)"** (dengan peringatan), supaya total tim sama dengan total di pivot. Contoh di file Bima lu: Nur Syafaatun Rp 9,79 jt; di file Arjuna: Rossi Mustaqim Rp 28,18 jt.
+- **Rapot**: SAK dan "Lainnya" tampil di tabel tanpa ranking dan tanpa kartu penilaian; omsetnya tetap masuk total tim di Performa dan halaman lain.
+- Berlaku untuk format data utama baru (TGT, OLAP SALES, JKS, LAB). Setelah update, **upload ulang Data utama** sekali supaya baris di luar JKS ikut terbaca.
+
+## Update 14 (13 Nov 2026): Jelajah, filter capaian dan Export Excel
+- **Jelajah > Cek cepat > baris baru "Capaian"**: filter baris hasil berdasarkan
+  - **vs timegone**: Semua, Di bawah (capaian di bawah timegone), Sudah di atas.
+  - **vs L3M** dan **vs bulan lalu**: Semua, Tumbuh (>= 100%), Turun (< 100%). Memakai pembanding yang dipilih (Timegone sama atau Keseluruhan).
+  Berlaku di level apa pun yang dipilih di Baris (salesman, toko, channel, SKU, dan seterusnya). TOTAL dihitung ulang dari baris yang lolos filter. Baris tanpa target tidak ikut filter timegone, dan baris tanpa data bulan lalu / L3M tidak ikut filter growth. Filter ikut tersimpan di preset.
+- **Tombol "Export Excel"** di panel Hasil: mengunduh tampilan yang sedang terfilter (semua baris, tidak dibatasi 500 seperti di layar). Sheet "Jelajah" berisi tabel (angka asli, format juta atau Rp sesuai pilihan, % dengan format persen, filter otomatis di header), sheet "Filter" berisi depo, tim, periode, timegone, pembanding, dan semua filter yang aktif.
+- Perbaikan kecil: kolom **% Kontribusi** di level toko / salesman sebelumnya selalu 0%; sekarang dihitung terhadap total cakupan.
+
+## Update 15 (13 Nov 2026): Benefit tabel program ON faktur berlaku untuk semua toko
+- **Kolom "Benefit toko"** di tabel program (ITG Arjuna dan ITG Supercup) sekarang ikut **pengaturan umum**: angka yang diedit di satu toko (baris dari katalog maupun baris tambahan) otomatis berlaku untuk semua toko, dan Total Benefit tiap toko ikut menyesuaikan.
+- **Kolom "Pengambilan" tetap per toko**, begitu juga target, actual, reward, dan angka khusus toko lainnya.
+- **"Khusus toko ini"**: angka benefit yang diubah hanya berlaku untuk toko itu. **"Jadikan semua toko seperti ini"** sekarang ikut menyalin angka benefit (termasuk benefit baris tambahan) ke semua toko.
+- Perbaikan: perubahan teks pada baris tambahan di mode "Khusus toko ini" sekarang ikut tersalin saat "Jadikan semua toko seperti ini".
+- Toko yang sebelumnya angka benefit-nya pernah diedit manual akan tampil sebagai "Khusus toko ini" (angkanya tidak hilang). Pakai "Kembali ke pengaturan umum" untuk mengikuti angka umum, atau "Jadikan semua toko seperti ini" untuk menjadikannya angka umum.
+
+## Update 16 (18 Nov 2026): Jelajah, pencarian nama toko
+- **Jelajah > Cek cepat > baris baru "Cari toko"**: ketik sebagian nama atau ID toko (boleh beberapa kata, semuanya harus cocok, tidak peduli huruf besar kecil), hasil langsung terfilter ke toko itu. Berlaku di semua level Baris, TOTAL ikut dihitung dari toko yang cocok, tersimpan di share link, ikut tercatat di sheet "Filter" saat Export Excel. Tidak ikut tersimpan di preset.
+- File yang berubah: `src/pages/Explore.jsx` saja. Upload sama seperti update sebelumnya (timpa file di GitHub, Vercel build otomatis). Butuh update 14 sudah terpasang.

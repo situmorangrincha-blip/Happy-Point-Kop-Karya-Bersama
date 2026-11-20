@@ -1,0 +1,601 @@
+import { useEffect, useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
+import { ctargetIndex } from '../lib/ctarget.js';
+import { LABELS, focusCatsOf, focusMatches, fmt, pace, paceCls, parseRoute, status, weekdayName } from '../lib/calc.js';
+import FocusPicker from '../components/FocusPicker.jsx';
+import { Bar, Panel, Seg } from '../components/ui.jsx';
+
+const loadJson = (k, d) => { try { return JSON.parse(localStorage.getItem(k) || 'null') ?? d; } catch { return d; } };
+const sum = (a, f) => a.reduce((t, x) => t + f(x), 0);
+const uniq = (a) => [...new Set(a)];
+const nk = (s) => String(s ?? '').trim().toUpperCase().replace(/\s+/g, ' ');
+const MAX_ROWS = 3;
+
+const STORE_DIMS = ['sales', 'tim', 'store', 'channel', 'size', 'day', 'pareto', 'sak', 'ca'];
+const SKU_DIMS = ['principal', 'brand', 'sku', 'category', 'catdb', 'fokus'];
+const DIM_LABEL = { sales: 'Salesman', tim: 'Tim', store: 'Toko', channel: 'Channel', size: 'Ukuran toko', day: 'Hari kunjungan', pareto: 'Pareto JKS', sak: 'Pareto SAK', ca: 'Status CA', principal: 'Principal', brand: 'Brand', sku: 'SKU', category: 'Kategori (Sub brand)', catdb: 'Kategori SKU', fokus: 'Kategori fokus' };
+
+// indikator. grp: kelompok; st: tersedia di level toko; sk: tersedia di level SKU
+const MEAS = [
+  { id: 'act', label: 'ACT (Rp)', grp: 'Pencapaian', st: 1, sk: 1, kind: 'rp' },
+  { id: 'tgt', label: 'Target', grp: 'Pencapaian', st: 1, sk: 'tgt', kind: 'rp' },
+  { id: 'ach', label: '% Ach', grp: 'Pencapaian', st: 1, sk: 'tgt', kind: 'pct' },
+  { id: 'gap', label: 'Gap', grp: 'Pencapaian', st: 1, sk: 'tgt', kind: 'rp' },
+  { id: 'vsTg', label: 'vs Timegone', grp: 'Pencapaian', st: 1, sk: 'tgt', kind: 'pace' },
+  { id: 'qty', label: 'Qty', grp: 'Pencapaian', st: 'qty', sk: 'qty', kind: 'qty' },
+  { id: 'lm', label: 'Sep', grp: 'Tren', st: 1, sk: 'trend', kind: 'rp' },
+  { id: 'l3m', label: 'L3M', grp: 'Tren', st: 1, sk: 'trend', kind: 'rp' },
+  { id: 'vsLm', label: 'vs Sep', grp: 'Tren', st: 1, sk: 'trend', kind: 'pace' },
+  { id: 'vsL3m', label: 'vs L3M', grp: 'Tren', st: 1, sk: 'trend', kind: 'pace' },
+  { id: 'n', label: 'Jml toko', grp: 'Jangkauan', st: 1, sk: 1, kind: 'int' },
+  { id: 'ca', label: 'CA', grp: 'Jangkauan', st: 1, sk: 1, kind: 'int' },
+  { id: 'caPct', label: '% CA', grp: 'Jangkauan', st: 1, sk: 1, kind: 'pct' },
+  { id: 'notBuy', label: 'Belum beli', grp: 'Jangkauan', st: 1, sk: 1, kind: 'int' },
+  { id: 'caProd', label: 'CA Prod', grp: 'Jangkauan', st: 1, sk: 0, kind: 'int' },
+  { id: 'avgCa', label: 'ACT / CA', grp: 'Jangkauan', st: 1, sk: 1, kind: 'rp' },
+  { id: 'share', label: '% Kontribusi', grp: 'Jangkauan', st: 1, sk: 1, kind: 'pct' },
+];
+const DEFAULT = { rows: ['sales'], ms: ['act', 'tgt', 'ach', 'ca'], filters: [], basis: 'same', unit: 'jt', cov: 'all', who: 'ALL', grp: 'ALL', q: '', fok: [], fTg: 'all', fL3: 'all', fLm: 'all', qs: '' };
+
+export default function Explore({ data, time, depot, team, mode = 'milestone', board }) {
+  const ci = useMemo(() => ctargetIndex(data, mode), [data, mode]);
+  const pkey = `sm_presets_${depot}_${team}`;
+  const [st, setSt] = useState(DEFAULT);
+  const [presets, setPresets] = useState(() => loadJson(pkey, []));
+  const [editF, setEditF] = useState(null);
+  const [over, setOver] = useState('');
+  const [sort, setSort] = useState({ k: null, dir: -1 });
+  useEffect(() => { setPresets(loadJson(pkey, [])); setSt(DEFAULT); }, [pkey]);
+  const set = (p) => setSt((o) => ({ ...o, ...p }));
+
+  const dimLabel = (d) => (d.startsWith('promo:') ? 'Program ' + (data.promos.find((p) => 'promo:' + p.id === d)?.name || '') : DIM_LABEL[d]);
+  const hasSku = data.subs.length > 0;
+  const hasQty = !!data.hasQty;
+  const hasSkuTgt = !!data.skuTgt && Object.keys(data.skuTgt).length > 0;
+  const tgBase = time.tg;
+  const progs = useMemo(() => uniq((data.prog || []).map((x) => x.p)), [data.prog]);
+  const teamName = data.meta.teamLabel || '';
+
+  // ---------- definisi dimensi ----------
+  const dimStore = useMemo(() => ({
+    sales: (s) => s.sales,
+    tim: (s) => data.groups?.[s.sales] || teamName,
+    store: (s) => s.id,
+    channel: (s) => (s.cc1 && s.cc1 !== '-' ? s.cc1 : '-'),
+    size: (s) => s.size || '-',
+    day: (s) => weekdayName(parseRoute(s.hk).wd) || '-',
+    pareto: (s) => (s.pj ? 'Pareto JKS' : 'Non-pareto'),
+    sak: (s) => (s.ps ? 'Pareto SAK' : 'Non-SAK'),
+    ca: (s) => (s.act >= 1 ? 'Sudah beli' : 'Belum beli'),
+    ...Object.fromEntries((data.promos || []).map((p) => { const set = new Set(p.ids); return ['promo:' + p.id, (s) => (set.has(s.id) ? 'Ikut' : 'Tidak ikut')]; })),
+  }), [data, teamName]);
+  const fokusGroups = useMemo(() => focusMatches(data, focusCatsOf(data)), [data]);
+  const fokusNames = useMemo(() => fokusGroups.map((g) => g.name), [fokusGroups]);
+  const fokusIdx = useMemo(() => { const m = new Map(); for (const g of fokusGroups) for (const i of g.idx) if (!m.has(i)) m.set(i, g.name); return m; }, [fokusGroups]);
+  const fokusByName = useMemo(() => new Map(fokusGroups.map((g) => [g.name, g.idx])), [fokusGroups]);
+  const dimSku = useMemo(() => ({ principal: (sb) => sb.p || '-', brand: (sb) => sb.b || '-', sku: (sb) => sb.n || '-', category: (sb) => sb.sub || sb.k || sb.b || '-', catdb: (sb) => sb.k || '-', fokus: (sb, i) => fokusIdx.get(i) || 'Lainnya' }), [fokusIdx]);
+  const storeById = useMemo(() => new Map(data.stores.map((s) => [s.id + '|' + nk(s.sales), s])), [data.stores]);
+  const storeCount = useMemo(() => { const o = {}; for (const s of data.stores) o[s.sales] = (o[s.sales] || 0) + 1; return o; }, [data.stores]);
+  const nameOf = (id) => data.stores.find((s) => s.id === id)?.name || id;
+  const promoDims = (data.promos || []).map((p) => 'promo:' + p.id);
+  const availDims = [...STORE_DIMS, ...promoDims, ...(hasSku ? SKU_DIMS : [])];
+
+  // ---------- filter cepat + filter seret ----------
+  const filters = [...st.filters];
+  if (st.who !== 'ALL') filters.push({ dim: 'sales', vals: [st.who] });
+  if (st.grp !== 'ALL') filters.push({ dim: 'tim', vals: [st.grp] });
+  if (st.cov === 'pj') filters.push({ dim: 'pareto', vals: ['Pareto JKS'] });
+  if (st.cov === 'np') filters.push({ dim: 'pareto', vals: ['Non-pareto'] });
+  if (st.cov === 'ps') filters.push({ dim: 'sak', vals: ['Pareto SAK'] });
+  const q = st.q.trim().toLowerCase();
+  const qs = (st.qs || '').trim().toLowerCase();
+  const skuMode = [...st.rows, ...filters.map((f) => f.dim)].some((d) => SKU_DIMS.includes(d)) || !!q;
+
+  const valuesOf = (dim) => {
+    if (SKU_DIMS.includes(dim)) return uniq(data.subs.map((sb, i) => dimSku[dim](sb, i))).sort();
+    if (dim === 'store') return data.stores.map((s) => s.id).slice(0, 400);
+    return uniq(data.stores.map(dimStore[dim])).sort();
+  };
+
+  const calc = useMemo(() => {
+    const stF = filters.filter((f) => !SKU_DIMS.includes(f.dim) && f.vals.length);
+    const skF = filters.filter((f) => SKU_DIMS.includes(f.dim) && f.vals.length);
+    const qsw = qs.split(/\s+/).filter(Boolean);
+    const pass = (s) => stF.every((f) => f.vals.includes(dimStore[f.dim](s))) && (!qsw.length || qsw.every((w) => ((s.name || '') + ' ' + s.id).toLowerCase().includes(w)));
+    const stores = data.stores.filter(pass);
+    const rowDimsSt = st.rows.filter((d) => !SKU_DIMS.includes(d));
+    const rowDimsSk = st.rows.filter((d) => SKU_DIMS.includes(d));
+    const keyOf = (vals) => vals.join('\u0001');
+    const msAvail = (m) => (skuMode ? m.sk : m.st);
+
+    let groups;
+    let total;
+    const mkLabel = (vals) => st.rows.map((d, i) => (d === 'store' ? nameOf(vals[i]) : vals[i]));
+
+    if (!skuMode) {
+      const m = new Map();
+      for (const s of stores) {
+        const vals = st.rows.map((d) => dimStore[d](s));
+        const k = keyOf(vals);
+        if (!m.has(k)) m.set(k, { vals, list: [] });
+        m.get(k).list.push(s);
+      }
+      groups = [...m.values()].map((g) => ({ ...g, ...storeMeasures(g.list, true) }));
+      total = storeMeasures(stores, true);
+      groups.forEach((g) => { g.share = total.act ? g.act / total.act : 0; }); total.share = 1; // % kontribusi terhadap seluruh cakupan
+    } else {
+      // level SKU: tiap toko x SKU yang punya nilai/qty
+      const subOk = data.subs.map((sb, i) => {
+        if (!skF.every((f) => f.vals.includes(dimSku[f.dim](sb, i)))) return false;
+        if (q && !`${sb.n} ${sb.b} ${sb.p} ${sb.c || ''} ${sb.k || ''}`.toLowerCase().includes(q)) return false;
+        return true;
+      });
+      const denom = new Map(); // jumlah toko per kombinasi dimensi toko (penyebut CA)
+      const sdKey = (s) => keyOf(rowDimsSt.map((d) => dimStore[d](s)));
+      const scope = new Map(); // id toko per kombinasi dimensi toko (untuk target kategori / principal)
+      for (const s of stores) { denom.set(sdKey(s), (denom.get(sdKey(s)) || 0) + 1); const k0 = sdKey(s); if (!scope.has(k0)) scope.set(k0, []); scope.get(k0).push(s.id); }
+      const m = new Map();
+      const cur = data.cat?.cur || {};
+      const qt = data.qty?.cur || {};
+      let all = { act: 0, qty: 0, tgt: 0, lm: 0, l3m: 0, buyers: new Set(), n: stores.length };
+      for (const s of stores) {
+        const ids = new Set([...Object.keys(cur[s.id] || {}), ...Object.keys(qt[s.id] || {}), ...Object.keys(data.cat?.lm?.[s.id] || {}), ...Object.keys(data.cat?.l3m?.[s.id] || {})]);
+        for (const i of ids) {
+          if (!subOk[i]) continue;
+          const sb = data.subs[i];
+          const vals = st.rows.map((d) => (!SKU_DIMS.includes(d) ? dimStore[d](s) : dimSku[d](sb, +i)));
+          const k = keyOf(vals);
+          let g = m.get(k);
+          if (!g) { g = { vals, act: 0, qty: 0, tgt: 0, lm: 0, l3m: 0, buyers: new Set(), sales: new Set(), dk: sdKey(s) }; m.set(k, g); }
+          const a = cur[s.id]?.[i] || 0;
+          const qq = qt[s.id]?.[i] || 0;
+          const lmv = data.cat?.lm?.[s.id]?.[i] || 0, l3v = data.cat?.l3m?.[s.id]?.[i] || 0;
+          g.act += a; g.qty += qq; g.tgt += data.skuTgt?.[s.id]?.[i] || 0; g.lm += lmv; g.l3m += l3v; all.lm += lmv; all.l3m += l3v;
+          g.sales.add(s.sales);
+          if (a > 0 || qq > 0) g.buyers.add(s.id);
+          all.act += a; all.qty += qq; all.tgt += data.skuTgt?.[s.id]?.[i] || 0;
+          if (a > 0 || qq > 0) all.buyers.add(s.id);
+        }
+      }
+      // target level principal (per salesman) kalau tidak ada target per SKU
+      const principalTgt = (g) => {
+        const pi = st.rows.indexOf('principal');
+        if (pi < 0) return null;
+        const si = st.rows.indexOf('sales');
+        const sales = si >= 0 ? [g.vals[si]] : [...g.sales];
+        if (sales.length !== 1) return null;
+        const t = data.targets?.milestone?.[sales[0]];
+        const v = t?.[nk(g.vals[pi])];
+        return v > 0 ? v : null;
+      };
+      groups = [...m.values()].map((g) => {
+        const n = denom.get(g.dk) || 0;
+        let tgt = g.tgt;
+        let tgtNote = false;
+        let ctUsed = false;
+        if (ci.has && !hasSkuTgt) {
+          const ki = st.rows.indexOf('category'), pi2 = st.rows.indexOf('principal');
+          const kind = ki >= 0 && pi2 < 0 ? 'kat' : pi2 >= 0 && ki < 0 ? 'prin' : null;
+          if (kind) {
+            const key = g.vals[kind === 'kat' ? ki : pi2];
+            let sum = 0, any = false, est = false;
+            for (const id of scope.get(g.dk) || []) { const r = ci.storeT(id, kind, key); if (r.t) { sum += r.t; any = true; est = est || r.est; } }
+            if (any) { tgt = sum; tgtNote = est; ctUsed = true; }
+          }
+        }
+        if (!hasSkuTgt && !ctUsed) { const pt = principalTgt(g); if (pt != null) { tgt = pt; tgtNote = true; } else tgt = 0; }
+        return { ...g, ...skuMeasures({ act: g.act, qty: g.qty, tgt, buyers: g.buyers.size, n, lm: g.lm, l3m: g.l3m }), tgtNote, hasT: tgt > 0, rlm: g.lm, rl3: g.l3m };
+      });
+      total = skuMeasures({ act: all.act, qty: all.qty, tgt: hasSkuTgt ? all.tgt : 0, buyers: all.buyers.size, n: all.n, lm: all.lm, l3m: all.l3m });
+      total.hasT = hasSkuTgt && all.tgt > 0;
+      const tot = total.act;
+      groups.forEach((g) => { g.share = tot ? g.act / tot : 0; });
+      total.share = 1;
+    }
+    // ---------- filter capaian: baris hasil yang di bawah / di atas timegone, tumbuh / turun vs L3M dan bulan lalu ----------
+    const nBefore = groups.length;
+    const useTg = st.fTg && st.fTg !== 'all';
+    const trendOk = !skuMode || !!data.hasSkuTrend;
+    const useL3 = st.fL3 && st.fL3 !== 'all' && trendOk;
+    const useLm = st.fLm && st.fLm !== 'all' && trendOk;
+    const filtOn = !!(useTg || useL3 || useLm);
+    if (filtOn) {
+      const okTg = (v) => v != null && (st.fTg === 'below' ? v < 1 : v >= 1);
+      const okGr = (f) => (v) => v != null && (f === 'down' ? v < 1 : v >= 1);
+      const okL3 = okGr(st.fL3), okLm = okGr(st.fLm);
+      groups = groups.filter((g) => (!useTg || okTg(g.vsTg)) && (!useL3 || okL3(g.vsL3m)) && (!useLm || okLm(g.vsLm)));
+      if (!skuMode) { total = storeMeasures(groups.flatMap((g) => g.list), true); total.share = sum(groups, (g) => g.share || 0); }
+      else {
+        const buy = new Set(); for (const g of groups) for (const b of g.buyers) buy.add(b);
+        const tg0 = sum(groups, (g) => g.tgt || 0);
+        const share = sum(groups, (g) => g.share || 0);
+        total = skuMeasures({ act: sum(groups, (g) => g.act), qty: sum(groups, (g) => g.qty), tgt: tg0, buyers: buy.size, n: total.n, lm: sum(groups, (g) => g.rlm || 0), l3m: sum(groups, (g) => g.rl3 || 0) });
+        total.hasT = tg0 > 0; total.share = share;
+      }
+    }
+    return { groups, total, mkLabel, msAvail, nStores: stores.length, nBefore, filtOn, trendOk };
+
+    function storeMeasures(list) {
+      const act = sum(list, (s) => s.act);
+      let tgt = sum(list, (s) => s.tgt);
+      if (!tgt) {
+        // target salesman (sheet TGT) dipakai kalau grup = seluruh toko salesman itu
+        const ss = [...new Set(list.map((s) => s.sales))];
+        const whole = ss.length > 0 && ss.every((n) => list.filter((s) => s.sales === n).length === storeCount[n]);
+        if (whole) tgt = sum(ss, (n) => data.targets?.milestone?.[n]?.total || 0);
+      }
+      const lm = sum(list, (s) => s.lm);
+      const l3m = sum(list, (s) => s.l3m);
+      const n = list.length;
+      const ca = list.filter((s) => s.act >= 1).length;
+      const baseLm = st.basis === 'same' ? lm * tgBase : lm;
+      const baseL3 = st.basis === 'same' ? l3m * tgBase : l3m;
+      const o = {
+        act, tgt, ach: tgt ? act / tgt : null, gap: act - tgt,
+        vsTg: tgt > 0 && tgBase > 0 ? act / (tgt * tgBase) : null,
+        qty: sum(list, (s) => sum(Object.values(data.qty?.cur?.[s.id] || {}), (v) => v)),
+        lm: baseLm, l3m: baseL3,
+        vsLm: baseLm > 0 ? act / baseLm : null,
+        vsL3m: baseL3 > 0 ? act / baseL3 : null,
+        n, ca, caPct: n ? ca / n : 0, notBuy: n - ca,
+        caProd: list.filter((s) => s.act >= s.min).length,
+        avgCa: ca ? act / ca : 0,
+        share: 0,
+        hasT: tgt > 0,
+      };
+      // kategori fokus yang dipilih: ACT, target, % Ach, dan L3M per kategori sebagai kolom
+      for (const c of st.fok || []) {
+        const idx = fokusByName.get(c) || [];
+        let a = 0, l = 0, t = 0;
+        for (const s of list) { const cu = data.cat?.cur?.[s.id], l3 = data.cat?.l3m?.[s.id]; for (const i of idx) { a += cu?.[i] || 0; l += l3?.[i] || 0; } if (ci.has) t += ci.storeT(s.id, 'kat', c).t || 0; }
+        o['fk:' + c + ':act'] = a; o['fk:' + c + ':l3'] = l; o['fk:' + c + ':tgt'] = t; o['fk:' + c + ':ach'] = t ? a / t : null;
+      }
+      // program (GreenStore / MSS)
+      const idSet = new Set(list.map((s) => s.id));
+      const salSet = new Set(list.map((s) => s.sales));
+      const byStoreDim = st.rows.includes('store');
+      for (const p of progs) {
+        // satu program bisa punya data per salesman dan per toko: pakai satu level saja supaya tidak terhitung dobel
+        const rows = (data.prog || []).filter((x) => x.p === p);
+        const salesLvl = rows.filter((x) => !x.id);
+        const storeLvl = rows.filter((x) => x.id);
+        let t = 0, a = 0;
+        const useSales = !byStoreDim && salesLvl.length > 0;
+        if (useSales) { for (const x of salesLvl) if (salSet.has(x.s)) { t += x.t; a += x.a; } }
+        else for (const x of storeLvl) if (idSet.has(x.id)) { t += x.t; a += x.a; }
+        o['p:' + p + ':t'] = t; o['p:' + p + ':a'] = a; o['p:' + p + ':pct'] = t ? a / t : null;
+      }
+      return o;
+    }
+    function skuMeasures({ act, qty, tgt, buyers, n, lm = 0, l3m = 0 }) {
+      const baseLm = st.basis === 'same' ? lm * tgBase : lm, baseL3 = st.basis === 'same' ? l3m * tgBase : l3m;
+      return { act, qty, tgt, ach: tgt ? act / tgt : null, gap: act - tgt, vsTg: tgt > 0 && tgBase > 0 ? act / (tgt * tgBase) : null, n, ca: buyers, caPct: n ? buyers / n : 0, notBuy: Math.max(0, n - buyers), avgCa: buyers ? act / buyers : 0, share: 0, lm: baseLm, l3m: baseL3, vsLm: baseLm > 0 ? act / baseLm : null, vsL3m: baseL3 > 0 ? act / baseL3 : null };
+    }
+  }, [data, st, skuMode, q, tgBase, progs, hasSkuTgt, ci]); // eslint-disable-line
+
+  // ---------- daftar indikator termasuk program ----------
+  const allMeas = useMemo(() => {
+    const base = MEAS.map((m) => ({ ...m, avail: skuMode ? (m.sk === 'tgt' ? true : m.sk === 'trend' ? !!data.hasSkuTrend : !!m.sk) : (m.st === 'qty' ? hasQty : !!m.st) }));
+    for (const c of st.fok || []) {
+      base.push({ id: `fk:${c}:act`, label: `${c} ACT`, grp: 'Kategori fokus', kind: 'rp', avail: !skuMode });
+      base.push({ id: `fk:${c}:tgt`, label: `${c} Target`, grp: 'Kategori fokus', kind: 'rp', avail: !skuMode });
+      base.push({ id: `fk:${c}:ach`, label: `${c} % Ach`, grp: 'Kategori fokus', kind: 'pct', avail: !skuMode });
+      base.push({ id: `fk:${c}:l3`, label: `${c} L3M`, grp: 'Kategori fokus', kind: 'rp', avail: !skuMode });
+    }
+    for (const p of progs) {
+      base.push({ id: `p:${p}:t`, label: `${p} Target`, grp: 'Program', kind: 'int', avail: !skuMode });
+      base.push({ id: `p:${p}:a`, label: `${p} Ach`, grp: 'Program', kind: 'int', avail: !skuMode });
+      base.push({ id: `p:${p}:pct`, label: `${p} %`, grp: 'Program', kind: 'pct', avail: !skuMode });
+    }
+    return base;
+  }, [skuMode, hasQty, progs, st.fok, data.hasSkuTrend]);
+  const mById = Object.fromEntries(allMeas.map((m) => [m.id, m]));
+  const noteOf = (m) => {
+    if (m.avail) return '';
+    if (skuMode) return m.grp === 'Tren' ? 'bulan lalu dan L3M per SKU butuh file Omset per SKU format tiga blok (bulan berjalan, L3M, bulan lalu)' : m.grp === 'Program' || m.grp === 'Kategori fokus' ? 'hanya di level toko / salesman (tanpa dimensi SKU di rows atau filter)' : 'tidak tersedia di level SKU';
+    return m.id === 'qty' ? 'belum ada data qty (upload slot Qty)' : '';
+  };
+  const labelOf = (m) => {
+    if (m.id === 'lm') return st.basis === 'same' ? LABELS.lm + ' @TG' : LABELS.lm;
+    if (m.id === 'l3m') return st.basis === 'same' ? 'L3M @TG' : 'L3M';
+    if (m.id === 'vsLm') return st.basis === 'same' ? 'vs ' + LABELS.lm + ' @TG' : 'vs ' + LABELS.lm + ' (full)';
+    if (m.id === 'vsL3m') return st.basis === 'same' ? 'vs L3M @TG' : 'vs L3M (full)';
+    return m.label;
+  };
+
+  // ---------- tampilan nilai ----------
+  const money = (v) => (st.unit === 'jt' ? fmt.jt(v, Math.abs(v) < 1e7 ? 2 : 1) : fmt.int(v));
+  const cell = (m, v, g) => {
+    if (v == null && (m.kind === 'pct' || m.kind === 'pace')) return '-';
+    if (v == null) v = 0;
+    if (m.kind === 'rp') {
+      if ((m.id === 'tgt' || m.id === 'gap') && g && g.hasT === false) return '-';
+      return money(v);
+    }
+    if (m.kind === 'int') return fmt.int(v);
+    if (m.kind === 'qty') return Number.isInteger(v) ? fmt.int(v) : v.toLocaleString('id-ID', { maximumFractionDigits: 1 });
+    if (m.kind === 'pct') return v == null ? '-' : fmt.pct(v, 0);
+    if (m.kind === 'pace') return fmt.pace(v);
+    return String(v);
+  };
+  const cls = (m, v) => {
+    if (v == null) return 'mut';
+    if (m.id === 'ach') return status(v, tgBase);
+    if (m.id === 'vsTg') return paceCls(v);
+    if (m.id === 'vsLm' || m.id === 'vsL3m') return paceCls(v);
+    if (m.id === 'gap') return v < 0 ? 'neg' : 'ok';
+    return '';
+  };
+
+  const msOn = st.ms.filter((id) => mById[id]?.avail);
+  const sorted = useMemo(() => {
+    const arr = [...calc.groups];
+    const k = sort.k;
+    arr.sort((a, b) => {
+      if (k && k.startsWith('d:')) { const i = +k.slice(2); return String(a.vals[i]).localeCompare(String(b.vals[i])) * sort.dir; }
+      const f = k || msOn[0];
+      if (!f) return 0;
+      return ((a[f] ?? -Infinity) - (b[f] ?? -Infinity)) * sort.dir;
+    });
+    return arr;
+  }, [calc.groups, sort, msOn.join(',')]); // eslint-disable-line
+  // ---------- export Excel dari tampilan yang sedang terfilter ----------
+  const exportXlsx = () => {
+    const jtU = st.unit === 'jt';
+    const head = [...st.rows.map(dimLabel), ...msOn.map((id) => (mById[id].kind === 'rp' && jtU ? (labelOf(mById[id]).includes('(Rp)') ? labelOf(mById[id]).replace('(Rp)', '(jt)') : labelOf(mById[id]) + ' (jt)') : labelOf(mById[id])))];
+    const conv = (m, v, g) => {
+      if (v == null) return null;
+      if (m.kind === 'rp') { if ((m.id === 'tgt' || m.id === 'gap') && g && g.hasT === false) return null; return jtU ? v / 1e6 : v; }
+      return v;
+    };
+    const body = sorted.map((g) => [...calc.mkLabel(g.vals), ...msOn.map((id) => conv(mById[id], g[id], g))]);
+    const tot = ['TOTAL', ...Array(Math.max(0, st.rows.length - 1)).fill(''), ...msOn.map((id) => conv(mById[id], calc.total[id], calc.total))];
+    const aoa = [head, ...body, tot];
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const zOf = (m) => (m.kind === 'rp' ? (jtU ? '#,##0.00' : '#,##0') : m.kind === 'pct' || m.kind === 'pace' ? '0%' : m.kind === 'qty' ? '#,##0.0' : '#,##0');
+    for (let r = 1; r < aoa.length; r++) msOn.forEach((id, c) => { const cell = ws[XLSX.utils.encode_cell({ r, c: st.rows.length + c })]; if (cell && cell.t === 'n') cell.z = zOf(mById[id]); });
+    ws['!cols'] = head.map((h, i) => ({ wch: i < st.rows.length ? Math.min(42, Math.max(14, ...body.map((r) => String(r[i] ?? '').length))) : Math.max(11, String(h).length + 2) }));
+    if (body.length) ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: body.length, c: head.length - 1 } }) };
+    // sheet keterangan filter supaya angka bisa dilacak asalnya
+    const info = [['Jelajah Sales Monitor'], ['Depo', depot], ['Tim', teamName || team], ['Periode', data.meta?.period?.label || ''], ['Timegone', fmt.pct(tgBase, 0)], ['Pembanding', st.basis === 'same' ? 'Timegone sama (bulan lalu dan L3M x timegone)' : 'Keseluruhan (total bulan lalu dan L3M)'], ['Angka', jtU ? 'Juta rupiah' : 'Rupiah'], ['Diexport', new Date().toLocaleString('id-ID')], [], ['FILTER YANG AKTIF']];
+    if (st.who !== 'ALL') info.push(['Salesman', st.who]);
+    if (st.grp !== 'ALL') info.push(['Tim', st.grp]);
+    if (qs) info.push(['Cari toko', st.qs.trim()]);
+    if (st.cov !== 'all') info.push(['Cakupan toko', { pj: 'Pareto JKS', np: 'Non-pareto', ps: 'Pareto SAK' }[st.cov]]);
+    for (const f of st.filters) if (f.vals.length) info.push([dimLabel(f.dim), f.vals.map((v) => (f.dim === 'store' ? nameOf(v) : v)).join(', ')]);
+    if (q) info.push(['Pencarian SKU', st.q.trim()]);
+    if (st.fTg !== 'all') info.push(['Capaian vs timegone', (st.fTg === 'below' ? 'Di bawah timegone' : 'Sudah di atas timegone') + ` (${fmt.pct(tgBase, 0)})`]);
+    if (st.fL3 !== 'all' && calc.trendOk) info.push(['Growth vs L3M', st.fL3 === 'up' ? 'Tumbuh (>= 100% dari L3M)' : 'Turun (< 100% dari L3M)']);
+    if (st.fLm !== 'all' && calc.trendOk) info.push(['Growth vs ' + LABELS.lm, st.fLm === 'up' ? 'Tumbuh (>= 100%)' : 'Turun (< 100%)']);
+    if (info.length === 10) info.push(['(tidak ada filter)', '']);
+    info.push([], ['Jumlah baris', `${sorted.length} dari ${calc.nBefore}`]);
+    const wi = XLSX.utils.aoa_to_sheet(info); wi['!cols'] = [{ wch: 26 }, { wch: 70 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Jelajah');
+    XLSX.utils.book_append_sheet(wb, wi, 'Filter');
+    XLSX.writeFile(wb, `Jelajah_${depot}_${team}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+  const clickSort = (k) => setSort((o) => (o.k === k ? { k, dir: -o.dir } : { k, dir: k.startsWith('d:') ? 1 : -1 }));
+
+  // ---------- drag & drop ----------
+  const drag = (t, id) => (e) => { e.dataTransfer.setData('text/plain', JSON.stringify({ t, id })); e.dataTransfer.effectAllowed = 'copy'; };
+  const addRow = (id) => setSt((o) => (o.rows.includes(id) || o.rows.length >= MAX_ROWS ? o : { ...o, rows: [...o.rows, id] }));
+  const addMeas = (id) => setSt((o) => (o.ms.includes(id) ? o : { ...o, ms: [...o.ms, id] }));
+  const addFilter = (dim) => { setSt((o) => (o.filters.some((f) => f.dim === dim) ? o : { ...o, filters: [...o.filters, { dim, vals: [] }] })); setEditF(dim); };
+  const drop = (zone) => (e) => {
+    e.preventDefault(); setOver('');
+    let p; try { p = JSON.parse(e.dataTransfer.getData('text/plain')); } catch { return; }
+    if (zone === 'rows' && p.t === 'dim') addRow(p.id);
+    if (zone === 'ms' && p.t === 'm') addMeas(p.id);
+    if (zone === 'flt' && p.t === 'dim') addFilter(p.id);
+  };
+  const zoneProps = (z) => ({ onDragOver: (e) => { e.preventDefault(); setOver(z); }, onDragLeave: () => setOver(''), onDrop: drop(z) });
+
+  const savePreset = () => {
+    const name = window.prompt('Nama preset?');
+    if (!name) return;
+    const p = [...presets.filter((x) => x.name !== name), { name, st: { ...st, q: '', qs: '', who: 'ALL' } }];
+    setPresets(p); localStorage.setItem(pkey, JSON.stringify(p));
+  };
+  const delPreset = (name) => { const p = presets.filter((x) => x.name !== name); setPresets(p); localStorage.setItem(pkey, JSON.stringify(p)); };
+
+  const groupsOf = (g) => [...new Set(Object.values(data.groups || {}))];
+  const timOpts = data.hasGroups ? [teamName, ...groupsOf()] : [];
+  const fEdit = st.filters.find((f) => f.dim === editF);
+
+  return (
+    <div className="grid">
+      {board && <details open className="panel" style={{ padding: '8px 10px' }}><summary style={{ cursor: 'pointer', fontWeight: 700, marginBottom: 6 }}>Papan ringkas</summary>{board}</details>}
+      <Panel title="CEK CEPAT" right={`${calc.nStores.toLocaleString('id-ID')} toko dalam cakupan · timegone ${fmt.pct(tgBase, 0)}`}>
+        <div className="opt-row">
+          <span className="mut">Siapa</span>
+          <Seg wrap value={st.who} onChange={(v) => set({ who: v })} options={[{ v: 'ALL', label: 'Semua' }, ...data.salesmen.map((s) => ({ v: s, label: fmt.short(s) }))]} />
+        </div>
+        <div className="opt-row">
+          <span className="mut">Cakupan toko</span>
+          <Seg value={st.cov} onChange={(v) => set({ cov: v })} options={[{ v: 'all', label: 'Semua toko' }, { v: 'pj', label: 'Pareto JKS' }, { v: 'np', label: 'Non-pareto' }, { v: 'ps', label: 'Pareto SAK' }]} />
+          {data.hasGroups && (<><span className="mut" style={{ marginLeft: 8 }}>Tim</span><Seg value={st.grp} onChange={(v) => set({ grp: v })} options={[{ v: 'ALL', label: 'Semua' }, ...timOpts.map((t) => ({ v: t, label: t }))]} /></>)}
+        </div>
+        <div className="opt-row">
+          <span className="mut">Cari toko</span>
+          <input className="input" style={{ width: 260 }} placeholder="ketik nama / ID toko, mis. berkah makmur" value={st.qs || ''} onChange={(e) => set({ qs: e.target.value })} />
+          {st.qs && <button className="btn sm ghost" onClick={() => set({ qs: '' })}>hapus</button>}
+        </div>
+        <div className="opt-row">
+          <span className="mut">Capaian</span>
+          <span className="mut" style={{ fontSize: 12 }}>vs timegone ({fmt.pct(tgBase, 0)})</span>
+          <Seg value={st.fTg || 'all'} onChange={(v) => set({ fTg: v })} options={[{ v: 'all', label: 'Semua' }, { v: 'below', label: 'Di bawah' }, { v: 'above', label: 'Sudah di atas' }]} />
+          {calc.trendOk ? (
+            <>
+              <span className="mut" style={{ fontSize: 12, marginLeft: 8 }}>vs L3M</span>
+              <Seg value={st.fL3 || 'all'} onChange={(v) => set({ fL3: v })} options={[{ v: 'all', label: 'Semua' }, { v: 'up', label: 'Tumbuh' }, { v: 'down', label: 'Turun' }]} />
+              <span className="mut" style={{ fontSize: 12, marginLeft: 8 }}>vs {LABELS.lm}</span>
+              <Seg value={st.fLm || 'all'} onChange={(v) => set({ fLm: v })} options={[{ v: 'all', label: 'Semua' }, { v: 'up', label: 'Tumbuh' }, { v: 'down', label: 'Turun' }]} />
+            </>
+          ) : <span className="mut" style={{ fontSize: 12, marginLeft: 8 }}>growth vs L3M dan {LABELS.lm} di level SKU butuh file Omset per SKU tiga blok</span>}
+          {(st.fTg !== 'all' || st.fL3 !== 'all' || st.fLm !== 'all') && <button className="btn sm ghost" onClick={() => set({ fTg: 'all', fL3: 'all', fLm: 'all' })}>reset capaian</button>}
+        </div>
+        <div className="opt-row" style={{ alignItems: 'flex-start' }}>
+          <span className="mut" style={{ paddingTop: 6 }}>Kategori fokus</span>
+          <div style={{ flex: 1, minWidth: 260 }}>
+            <FocusPicker kinds={['kat']} cats={fokusNames} picks={(st.fok || []).map((k) => ({ kind: 'kat', key: k }))} onToggle={(kind, key) => set({ fok: (st.fok || []).includes(key) ? st.fok.filter((x) => x !== key) : [...(st.fok || []), key] })} placeholder="cari kategori fokus…" />
+            {(st.fok || []).length > 0 && (
+              <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                <span className="mut" style={{ fontSize: 12 }}>Pakai sebagai</span>
+                <button className="btn sm" onClick={() => setSt((o) => ({ ...o, ms: [...new Set([...o.ms, ...o.fok.flatMap((c) => [`fk:${c}:act`, `fk:${c}:ach`, `fk:${c}:l3`])])] }))}>Kolom (ACT, % Ach, L3M)</button>
+                <button className="btn sm" onClick={() => setSt((o) => ({ ...o, filters: [...o.filters.filter((f) => f.dim !== 'fokus'), { dim: 'fokus', vals: o.fok }] }))}>Filter</button>
+                <button className="btn sm" onClick={() => setSt((o) => ({ ...o, rows: ['fokus', ...o.rows.filter((r) => r !== 'fokus')].slice(0, MAX_ROWS) }))}>Baris</button>
+                <button className="btn sm ghost" onClick={() => setSt((o) => ({ ...o, fok: [], filters: o.filters.filter((f) => f.dim !== 'fokus'), rows: o.rows.filter((r) => r !== 'fokus'), ms: o.ms.filter((m) => !m.startsWith('fk:')) }))}>Hapus</button>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="opt-row">
+          <span className="mut">Apa</span>
+          <input className="input" style={{ width: 260 }} placeholder={hasSku ? 'ketik SKU / brand, mis. chocolatos' : 'upload slot Qty/SKU dulu'} disabled={!hasSku} value={st.q} onChange={(e) => set({ q: e.target.value })} />
+          {st.q && <button className="btn sm ghost" onClick={() => set({ q: '' })}>hapus</button>}
+          <span className="mut" style={{ marginLeft: 8 }}>Pembanding</span>
+          <Seg value={st.basis} onChange={(v) => set({ basis: v })} options={[{ v: 'same', label: 'Timegone sama' }, { v: 'full', label: 'Keseluruhan' }]} />
+          <span className="mut" style={{ marginLeft: 8 }}>Angka</span>
+          <Seg value={st.unit} onChange={(v) => set({ unit: v })} options={[{ v: 'jt', label: 'Juta' }, { v: 'rp', label: 'Rp' }]} />
+        </div>
+      </Panel>
+
+      <div className="explore">
+        <Panel title="VARIABEL & SCORECARD" className="vars">
+          <div className="vgroup">Lihat per · tap / geret ke Baris</div>
+          <div className="vchips">
+            {availDims.map((d) => (
+              <span key={d} className="vchip" draggable onDragStart={drag('dim', d)} onClick={() => addRow(d)} title="Tap = tambah ke Baris">
+                {dimLabel(d)}
+                <button className="x" title="Jadikan filter" onClick={(e) => { e.stopPropagation(); addFilter(d); }}>▾</button>
+              </span>
+            ))}
+          </div>
+          {['Pencapaian', 'Tren', 'Jangkauan', 'Program'].map((g) => {
+            const list = allMeas.filter((m) => m.grp === g);
+            if (!list.length) return null;
+            return (
+              <div key={g}>
+                <div className="vgroup">{g}</div>
+                <div className="score-grid">
+                  {list.map((m) => {
+                    const v = calc.total[m.id];
+                    const c = m.avail ? cls(m, v) : '';
+                    const bar = m.avail && (m.kind === 'pct' || m.kind === 'pace') && v != null ? Math.min(1, v) : null;
+                    return (
+                      <div key={m.id} className={'score' + (m.avail ? '' : ' off') + (st.ms.includes(m.id) ? ' on' : '')} draggable={m.avail} onDragStart={m.avail ? drag('m', m.id) : undefined} title={noteOf(m) || 'Tap atau geret ke Indikator'} onClick={() => m.avail && (st.ms.includes(m.id) ? set({ ms: st.ms.filter((x) => x !== m.id) }) : addMeas(m.id))}>
+                        <div className="sl">{labelOf(m)}</div>
+                        <div className={'sv ' + c}>{m.avail ? cell(m, v, calc.total) : '–'}</div>
+                        {bar != null ? <div className="sbar"><i className={'bg-' + (m.kind === 'pct' && m.id !== 'caPct' && m.id !== 'share' ? status(v, tgBase) : 'mp')} style={{ width: bar * 100 + '%' }} /></div> : <div className="sbar none" />}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </Panel>
+
+        <div>
+          <div className="zones">
+            <div className={'zone' + (over === 'rows' ? ' over' : '')} {...zoneProps('rows')}>
+              <h4>Baris · lihat per</h4>
+              {st.rows.map((d) => <span key={d} className="pill">{dimLabel(d)}<button className="x" onClick={() => set({ rows: st.rows.filter((x) => x !== d) })}>×</button></span>)}
+              {!st.rows.length && <span className="hint">geret variabel ke sini</span>}
+            </div>
+            <div className={'zone' + (over === 'ms' ? ' over' : '')} {...zoneProps('ms')}>
+              <h4>Indikator</h4>
+              {st.ms.map((id) => mById[id] && (
+                <span key={id} className="pill" style={mById[id].avail ? undefined : { opacity: 0.45 }} title={noteOf(mById[id])}>{labelOf(mById[id])}<button className="x" onClick={() => set({ ms: st.ms.filter((x) => x !== id) })}>×</button></span>
+              ))}
+              {!st.ms.length && <span className="hint">geret indikator ke sini</span>}
+            </div>
+            <div className={'zone' + (over === 'flt' ? ' over' : '')} {...zoneProps('flt')}>
+              <h4>Filter</h4>
+              {st.filters.map((f) => (
+                <span key={f.dim} className="pill" style={{ cursor: 'pointer' }} onClick={() => setEditF(editF === f.dim ? null : f.dim)}>
+                  {dimLabel(f.dim)}: {f.vals.length ? (f.vals.length > 2 ? `${f.vals.length} dipilih` : f.vals.map((v) => (f.dim === 'store' ? nameOf(v) : v)).join(', ')) : 'semua'}
+                  <button className="x" onClick={(e) => { e.stopPropagation(); set({ filters: st.filters.filter((x) => x.dim !== f.dim) }); if (editF === f.dim) setEditF(null); }}>×</button>
+                </span>
+              ))}
+              {!st.filters.length && <span className="hint">geret variabel (atau tap ▾) ke sini</span>}
+            </div>
+          </div>
+          {fEdit && (
+            <div className="fbox">
+              <b>{dimLabel(fEdit.dim)}</b> <span className="mut">(kosong = semua)</span>
+              <div>
+                {valuesOf(fEdit.dim).map((v) => (
+                  <label key={v}>
+                    <input type="checkbox" checked={fEdit.vals.includes(v)} onChange={(e) => set({ filters: st.filters.map((f) => (f.dim === fEdit.dim ? { ...f, vals: e.target.checked ? [...f.vals, v] : f.vals.filter((x) => x !== v) } : f)) })} />
+                    {fEdit.dim === 'store' ? nameOf(v) : v}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {skuMode && <div className="warn" style={{ marginBottom: 8 }}>Level SKU aktif: Sep / L3M tidak ditampilkan karena datanya cuma ada per toko. {hasSkuTgt ? '' : ci.has ? 'Target per SKU tidak ada; target kategori / principal diambil dari slot "Target kategori / principal" (ditandai * kalau target salesman dibagi ke toko menurut kontribusi L3M).' : 'Target per SKU tidak ada; target diambil dari target principal per salesman (tidak ikut cakupan Pareto), ditandai *.'}</div>}
+
+          {!st.rows.length || !msOn.length ? (
+            <Panel title="HASIL"><div className="empty"><p className="mut">Pilih minimal satu Baris dan satu Indikator.</p></div></Panel>
+          ) : (
+            <>
+              <Panel title="HASIL" right={<><button className="btn sm" onClick={exportXlsx} title="Download tampilan ini (sesuai filter) sebagai Excel">Export Excel</button> <button className="btn sm" onClick={savePreset}>Simpan preset</button> <button className="btn sm" onClick={() => setSt(DEFAULT)}>Reset</button></>} flush>
+                <div className="scroll">
+                  <table className="t">
+                    <thead>
+                      <tr>
+                        {st.rows.map((d, i) => <th key={d} className="l sortable" onClick={() => clickSort('d:' + i)}>{dimLabel(d)}</th>)}
+                        {msOn.map((id) => {
+                          const m = mById[id];
+                          return <th key={id} className={'sortable' + (sort.k === id ? ' sorted' : '')} onClick={() => clickSort(id)}>{labelOf(m)}{skuMode && m.id === 'tgt' && !hasSkuTgt ? '*' : ''}{sort.k === id ? (sort.dir < 0 ? ' ▼' : ' ▲') : ''}</th>;
+                        })}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sorted.slice(0, 500).map((g) => (
+                        <tr key={g.vals.join('|')}>
+                          {calc.mkLabel(g.vals).map((v, i) => <td key={i} className="l nm">{v}</td>)}
+                          {msOn.map((id) => {
+                            const m = mById[id];
+                            const v = g[id];
+                            return (
+                              <td key={id} className={cls(m, v)}>
+                                {id === 'ach' && v != null ? (
+                                  <span className="barlbl" style={{ minWidth: 110 }}><Bar value={v} mark={tgBase} tg={tgBase} /><span className="ach">{cell(m, v, g)}</span></span>
+                                ) : cell(m, v, g)}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                      <tr className="tot">
+                        <td className="l" colSpan={st.rows.length}>TOTAL</td>
+                        {msOn.map((id) => <td key={id} className={cls(mById[id], calc.total[id])}>{cell(mById[id], calc.total[id], calc.total)}</td>)}
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div className="note">
+                  {st.basis === 'same' ? `Pembanding "Timegone sama": Sep/L3M × timegone (${fmt.pct(tgBase, 0)}), estimasi proporsional karena Sep dan L3M tersimpan sebagai total sebulan.` : 'Pembanding "Keseluruhan": ACT dibanding total Sep / rata-rata L3M sebulan penuh.'}
+                  {calc.filtOn ? ` Filter capaian aktif: ${sorted.length} dari ${calc.nBefore} baris; TOTAL dihitung dari baris yang lolos filter. Baris tanpa target tidak ikut filter vs timegone, dan baris tanpa data bulan lalu / L3M tidak ikut filter growth. Growth memakai pembanding yang dipilih di atas.` : ''}
+                  {sorted.length > 500 ? ` Menampilkan 500 dari ${sorted.length} baris (Export Excel memuat semuanya).` : ''}
+                </div>
+              </Panel>
+            </>
+          )}
+          {presets.length > 0 && (
+            <div className="row" style={{ marginTop: 10 }}>
+              <span className="mut">Preset:</span>
+              {presets.map((p) => (
+                <span key={p.name} className="pill" style={{ cursor: 'pointer' }} onClick={() => setSt({ ...DEFAULT, ...p.st })}>{p.name}<button className="x" onClick={(e) => { e.stopPropagation(); delPreset(p.name); }}>×</button></span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
